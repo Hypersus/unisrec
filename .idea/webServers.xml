@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="24a9841d-d5f3-4636-921a-62a854a5844a" name="UniSRec">
+        <fileTransfer rootFolder="/home/zhengke/test2/UniSRec" accessType="SFTP" host="10.12.233.29" port="10086" sshConfigId="b7e84abe-100d-43d5-b81b-51c71d30d07e" sshConfig="zhengke@10.12.233.29:10086 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
