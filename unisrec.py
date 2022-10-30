@@ -2,8 +2,9 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from SASRec import SASRec
-
+from recbole.model.layers import TransformerEncoder
+from recbole.model.loss import BPRLoss
+from recbole.utils import ModelType
 
 class PWLayer(nn.Module):
     """Single Parametric Whitening Layer
@@ -59,9 +60,51 @@ class MoEAdaptorLayer(nn.Module):
         return multiple_outputs.sum(dim=-2)
 
 
-class UniSRec(SASRec):
+
+
+class UniSRec(nn.Module):
+    type = ModelType.SEQUENTIAL
     def __init__(self, config, dataset):
-        super().__init__(config, dataset)
+        super(UniSRec,self).__init__()
+        # from seq_recommender
+        self.max_seq_length = config['MAX_ITEM_LIST_LENGTH']
+        self.ITEM_ID = config['ITEM_ID_FIELD']
+        self.ITEM_SEQ = self.ITEM_ID + config['LIST_SUFFIX']
+        self.ITEM_SEQ_LEN = config['ITEM_LIST_LENGTH_FIELD']
+        self.POS_ITEM_ID = self.ITEM_ID
+        # from SASRec
+        self.n_items = dataset.num(self.ITEM_ID)
+        self.hidden_size = config['hidden_size']
+        self.item_embedding = nn.Embedding(self.n_items, self.hidden_size, padding_idx=0)
+        self.n_layers = config['n_layers']
+        self.n_heads = config['n_heads']
+        self.inner_size = config['inner_size']
+        self.hidden_act = config['hidden_act']
+        self.attn_dropout_prob = config['attn_dropout_prob']
+        self.layer_norm_eps = config['layer_norm_eps']
+        self.hidden_dropout_prob = config['hidden_dropout_prob']
+        self.position_embedding = nn.Embedding(self.max_seq_length, self.hidden_size)
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.dropout = nn.Dropout(self.hidden_dropout_prob)
+        self.loss_type = config['loss_type']
+        self.trm_encoder = TransformerEncoder(
+            n_layers=self.n_layers,
+            n_heads=self.n_heads,
+            hidden_size=self.hidden_size,
+            inner_size=self.inner_size,
+            hidden_dropout_prob=self.hidden_dropout_prob,
+            attn_dropout_prob=self.attn_dropout_prob,
+            hidden_act=self.hidden_act,
+            layer_norm_eps=self.layer_norm_eps
+        )
+        if self.loss_type == 'BPR':
+            self.loss_fct = BPRLoss()
+        elif self.loss_type == 'CE':
+            self.loss_fct = nn.CrossEntropyLoss()
+        else:
+            raise NotImplementedError("Make sure 'loss_type' in ['BPR', 'CE']!")
+
+
 
         self.train_stage = config['train_stage']
         self.temperature = config['temperature']
@@ -84,6 +127,26 @@ class UniSRec(SASRec):
             config['adaptor_dropout_prob']
         )
 
+    def other_parameter(self):
+        if hasattr(self, 'other_parameter_name'):
+            return {key: getattr(self, key) for key in self.other_parameter_name}
+        return dict()
+
+    def get_attention_mask(self, item_seq, bidirectional=False):
+        """Generate left-to-right uni-directional or bidirectional attention mask for multi-head attention."""
+        attention_mask = (item_seq != 0)
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # torch.bool
+        if not bidirectional:
+            extended_attention_mask = torch.tril(extended_attention_mask.expand((-1, -1, item_seq.size(-1), -1)))
+        extended_attention_mask = torch.where(extended_attention_mask, 0., -10000.)
+        return extended_attention_mask
+
+    def gather_indexes(self, output, gather_index):
+        """Gathers the vectors at the specific positions over a minibatch"""
+        gather_index = gather_index.view(-1, 1, 1).expand(-1, -1, output.shape[-1])
+        output_tensor = output.gather(dim=1, index=gather_index)
+        return output_tensor.squeeze(1)
+
     def forward(self, item_seq, item_emb, item_seq_len):
         position_ids = torch.arange(item_seq.size(1), dtype=torch.long, device=item_seq.device)
         position_ids = position_ids.unsqueeze(0).expand_as(item_seq)
@@ -101,6 +164,8 @@ class UniSRec(SASRec):
         output = trm_output[-1]
         output = self.gather_indexes(output, item_seq_len - 1)
         return output  # [B H]
+
+
 
     def seq_item_contrastive_task(self, seq_output, same_pos_id, interaction):
         pos_items_emb = self.moe_adaptor(interaction['pos_item_emb'])
